@@ -12,18 +12,22 @@ from diffusers.hooks import apply_group_offloading
 from transformers import T5EncoderModel, CLIPTextModel
 from src.pipeline_tryon import FluxTryonPipeline
 from optimum.quanto import freeze, qfloat8, quantize
+from para_attn.first_block_cache.diffusers_adapters import apply_cache_on_pipe
 
 device = torch.device("cuda")
 torch_dtype = torch.bfloat16 # torch.float16
 
+pipe = None
+
 def load_models(device=device, torch_dtype=torch_dtype,group_offloading=False):
+    global pipe
+    if pipe is not None:
+        return pipe
     bfl_repo = "black-forest-labs/FLUX.1-dev"
-    # Enable memory efficient attention
     text_encoder = CLIPTextModel.from_pretrained(bfl_repo, subfolder="text_encoder", torch_dtype=torch_dtype,)
     text_encoder_2 = T5EncoderModel.from_pretrained(bfl_repo, subfolder="text_encoder_2", torch_dtype=torch_dtype,)
-    transformer = FluxTransformer2DModel.from_pretrained(bfl_repo, subfolder="transformer", torch_dtype=torch_dtype,)
+    transformer = FluxTransformer2DModel.from_single_file("https://huggingface.co/Kijai/flux-fp8/blob/main/flux1-dev-fp8-e4m3fn.safetensors", torch_dtype=torch_dtype)
     vae = AutoencoderKL.from_pretrained(bfl_repo, subfolder="vae", torch_dtype=torch_dtype)
-    # transformer = FluxTransformer2DModel.from_single_file("Kijai/flux-fp8/flux1-dev-fp8.safetensors", torch_dtype=torch_dtype)
     pipe = FluxTryonPipeline.from_pretrained(
         bfl_repo,
         transformer=transformer,
@@ -31,25 +35,18 @@ def load_models(device=device, torch_dtype=torch_dtype,group_offloading=False):
         text_encoder_2=text_encoder_2,
         vae=vae,
         torch_dtype=torch_dtype,
-    )#.to(device="cpu", dtype=torch_dtype)
-    # pipe.transformer = torch.compile(pipe.transformer, mode="reduce-overhead", fullgraph=True) # Do not use this if resolution can change
-    # # quantize transformer cause severe degration
-    # quantize(pipe.transformer, weights=qfloat8)
-    # freeze(pipe.transformer)
-    quantize(pipe.text_encoder_2, weights=qfloat8)
+    )
     freeze(pipe.text_encoder_2)    
-    # pipe.to(device=device)
+    pipe.to(device="cuda")
 
-    # Enable memory efficient attention and VAE optimization
-    pipe.enable_attention_slicing()
-    pipe.vae.enable_slicing()
-    pipe.vae.enable_tiling()
+    apply_cache_on_pipe(
+        pipe,
+        residual_diff_threshold=0.08,  # Use a larger value to make the cache take effect
+    )
 
-    pipe.enable_model_cpu_offload()
-    # pipe.enable_sequential_cpu_offload()
     pipe.load_lora_weights(
         "loooooong/Any2anyTryon",
-        weight_name="dev_lora_any2any_alltasks.safetensors",
+        weight_name="dev_lora_any2any_tryon.safetensors",
         adapter_name="tryon",
     )
     pipe.remove_all_hooks()
@@ -84,8 +81,6 @@ def load_models(device=device, torch_dtype=torch_dtype,group_offloading=False):
             offload_type="leaf_level",
             use_stream=True,
         )
-
-    pipe.to(device=device)
     return pipe
 
 def crop_to_multiple_of_16(img):
@@ -153,6 +148,7 @@ def resize_by_height(image, height):
 # @spaces.GPU()
 @torch.no_grad
 def generate_image(prompt, model_image, garment_image, height=512, width=384, seed=0, guidance_scale=3.5, show_type="follow model image", num_inference_steps=30):
+    global pipe
     height, width = int(height), int(width)
     width = width - (width % 16)  
     height = height - (height % 16)

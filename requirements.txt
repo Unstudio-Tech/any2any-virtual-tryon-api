@@ -9,3 +9,7 @@ pandas==2.2.3
 gradio
 pillow==11.1.0
 protobuf
+fastapi
+boto3
+para_attn
+uvicorn
