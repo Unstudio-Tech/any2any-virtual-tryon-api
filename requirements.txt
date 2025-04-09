@@ -13,3 +13,4 @@ fastapi
 boto3
 para_attn
 uvicorn
+cachetools

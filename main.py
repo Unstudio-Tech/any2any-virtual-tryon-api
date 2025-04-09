@@ -10,7 +10,7 @@ import numpy as np
 import torch
 import requests
 
-from app.py import load_models, generate_image, resize_by_height
+from app import load_models, generate_image, resize_by_height
 
 app = FastAPI()
 lock = Lock()
